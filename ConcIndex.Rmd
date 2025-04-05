@@ -1,0 +1,239 @@
+---
+title: "Concentration Index"
+author: "Jonathan Ma"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(dplyr)
+library(ineq)
+library(tidyverse)
+manual_theil <- function(x) {
+  x <- x[x > 0]  # avoid log(0)
+  mu <- mean(x)
+  sum((x / mu) * log(x / mu)) / length(x)
+}
+```
+
+```{r, include=FALSE}
+df <- read.csv('/Users/jonathanma/Desktop/Academics/2024-25/EconProject/HonorsProject/nsch_data.csv')
+df <- df %>%
+  mutate(
+    RACETH = case_when(
+      RE_WHITE == 1 ~ "White",
+      RE_BLACK == 1 ~ "Black",
+      RE_HISPANIC == 1 ~ "Hispanic",
+      RE_OTHER == 1 ~ "Other"
+    )
+  )
+df <- df %>%
+  mutate(GENDER_LABEL = case_when(
+    GENDER == 1 ~ "Male",
+    GENDER == 2 ~ "Female",
+    TRUE ~ "Other"
+  ))
+```
+
+```{r, include=FALSE}
+manual_decomp_inequality <- function(data, outcome_var, group_var) {
+  df <- data %>% select(all_of(c(outcome_var, group_var))) %>% na.omit()
+
+  total <- df[[outcome_var]]
+  rank_var <- df[[group_var]]
+
+  overall_mean <- mean(total)
+  overall_n <- length(total)
+
+  # Total inequality
+  total_theil <- manual_theil(total)
+
+  # Within-group and between-group decomposition
+  group_stats <- df %>%
+    group_by(.data[[group_var]]) %>%
+    summarise(
+      n = n(),
+      mean_y = mean(.data[[outcome_var]]),
+      theil = manual_theil(.data[[outcome_var]]),
+      gini = ineq::Gini(.data[[outcome_var]]),
+      cv = sd(.data[[outcome_var]]) / mean(.data[[outcome_var]]),
+      sdl = sd(log(.data[[outcome_var]][.data[[outcome_var]] > 0]))
+    )
+
+  # Within-group inequality
+  within <- sum((group_stats$n / overall_n) * group_stats$theil)
+
+  # Between-group Theil index
+  between <- sum((group_stats$n / overall_n) *
+                   (group_stats$mean_y / overall_mean) *
+                   log(group_stats$mean_y / overall_mean), na.rm = TRUE)
+
+  # Gini
+  gini_total <- ineq::Gini(total)
+
+  # Concentration Index (based on ranking by group_var)
+  n <- length(total)
+  rank_prop <- rank(rank_var, ties.method = "average") / n
+  ci <- 2 * cov(total, rank_prop) / mean(total)
+
+  # Kakwani = CI - Gini
+  kakwani <- ci - gini_total
+
+  tibble(
+    Group = group_var,
+    Observations = overall_n,
+    Mean = round(overall_mean, 3),
+    Gini = round(gini_total, 4),
+    Coef_of_Variation = round(sd(total) / overall_mean, 4),
+    SDL = round(sd(log(total[total > 0])), 4),
+    Theil_Total = round(total_theil, 4),
+    Theil_Within = round(within, 4),
+    Theil_Between = round(between, 4),
+    Concentration_Index = round(ci, 4),
+    Kakwani_Index = round(kakwani, 4)
+  )
+}
+```
+
+```{r, include=FALSE}
+library(dplyr)
+library(ggplot2)
+plot_inequality_curve <- function(data, outcome_var, ranking_var, group_var = NULL, title = "", flip_outcome = FALSE) {
+  df <- data %>% select(all_of(c(outcome_var, ranking_var, group_var))) %>% na.omit()
+
+  # Flip sign of outcome if desired
+  if (flip_outcome) {
+    df[[outcome_var]] <- -1 * df[[outcome_var]]
+  }
+
+  df <- df %>%
+    mutate(rnk = rank(.data[[ranking_var]], ties.method = "average") / n())
+
+  if (!is.null(group_var)) {
+    df <- df %>%
+      group_by(.data[[group_var]]) %>%
+      arrange(rnk) %>%
+      mutate(
+        cum_y = cumsum(.data[[outcome_var]]) / sum(.data[[outcome_var]]),
+        cum_r = rank(.data[[ranking_var]], ties.method = "first") / n()
+      ) %>%
+      ungroup()
+  } else {
+    df <- df %>%
+      arrange(rnk) %>%
+      mutate(
+        cum_y = cumsum(.data[[outcome_var]]) / sum(.data[[outcome_var]]),
+        cum_r = rank(.data[[ranking_var]], ties.method = "first") / n()
+      )
+  }
+
+  ggplot(df, aes(x = cum_r, y = cum_y, color = if (!is.null(group_var)) .data[[group_var]] else NULL)) +
+    geom_line(size = 1.3) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+    labs(
+      title = title,
+      x = "Cum. Prop. Ranked by Predictor",
+      y = paste("Cum.", outcome_var),
+      color = group_var
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+# Inequality analysis
+```{r, include=FALSE}
+run_all_inequality_analyses <- function(data) {
+  results <- list()
+
+  # 1. BMI ~ AGE
+  results[["AGE"]] <- manual_decomp_inequality(data, "BMICLASS_1", "AGE")
+
+  # 2. BMI ~ GENDER
+  results[["GENDER"]] <- manual_decomp_inequality(data, "BMICLASS_1", "GENDER")
+
+  # 3. BMI ~ INCOME
+  results[["INCOME"]] <- manual_decomp_inequality(data, "BMICLASS_1", "INCOME")
+
+  # 4. BMI ~ EDUC_P
+  results[["EDUC_P"]] <- manual_decomp_inequality(data, "BMICLASS_1", "EDUC_P")
+
+  # 5. BMI ~ RACETH
+  results[["RACETH"]] <- manual_decomp_inequality(data, "BMICLASS_1", "RACETH")
+
+  # 6–7. BMI ~ QUALITY_HEALTH by Gender
+  genders <- unique(na.omit(data$GENDER))
+  for (g in genders) {
+    gender_label <- ifelse(g == 1, "Male", ifelse(g == 2, "Female", paste("Gender", g)))
+    data_gender <- data %>% filter(GENDER == g)
+    results[[paste0("QH (", gender_label, ")")]] <-
+      manual_decomp_inequality(data_gender, "BMICLASS_1", "QUALITY_HEALTH")
+  }
+
+  bind_rows(results, .id = "Comparison")
+}
+
+summary_table <- run_all_inequality_analyses(df)
+# Save Comparison labels separately
+row_labels <- summary_table$Comparison
+
+# Remove the Comparison column and transpose
+t_summary <- as.data.frame(t(summary_table[,-1]))
+
+# Set column names to the comparisons
+colnames(t_summary) <- row_labels
+
+# Add a column for metric names
+t_summary <- tibble::rownames_to_column(t_summary, var = "Metric")
+```
+
+```{r}
+
+knitr::kable(t_summary, format = "pipe", caption = "Inequality Summary Table")
+```
+
+## Graphs
+```{r, include=FALSE}
+# 1. RACETH
+bmi_raceth <- plot_inequality_curve(df,
+                                    outcome_var = "BMI",
+                                    ranking_var = "INCOME",
+                                    group_var = "RACETH",
+                                    title = "BMI Inequality: Race/Ethnicity",
+                                    flip_outcome = TRUE   # << THIS flips the curve above 45° line
+                                    )
+# 2. QUALITY_HEALTH
+bmi_qh <- plot_inequality_curve(df, 
+                                outcome_var = "BMI", 
+                                ranking_var = "QUALITY_HEALTH", 
+                                group_var = "GENDER_LABEL", 
+                                title = "BMI Inequality: Health Quality")
+
+# 3. INCOME vs EDUC_P — plot both on one figure using group_var
+df_income_edu <- df %>%
+  select(BMI, INCOME, EDUC_P) %>%
+  pivot_longer(cols = c("INCOME", "EDUC_P"), names_to = "SES Var", values_to = "RankVal")
+
+bmi_ses <- plot_inequality_curve(df_income_edu, 
+                                 outcome_var = "BMI", 
+                                 ranking_var = "RankVal", 
+                                 group_var = "SES Var", 
+                                 title = "BMI Inequality: Income vs Education")
+
+# 4. AGE by GENDER
+bmi_age_gender <- plot_inequality_curve(df, 
+                                        outcome_var = "BMI", 
+                                        ranking_var = "AGE", 
+                                        group_var = "GENDER_LABEL", 
+                                        title = "BMI Inequality: Age and Gender")
+```
+
+```{r}
+bmi_raceth
+bmi_qh
+bmi_ses
+bmi_age_gender
+```

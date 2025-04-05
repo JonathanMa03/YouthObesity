@@ -1,0 +1,225 @@
+---
+title: "Obesity Model"
+author: "Jonathan Ma"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Model Preparation
+
+```{r, include = FALSE}
+library(tidyverse)
+df <- read.csv('/Users/jonathanma/Desktop/Academics/2024-25/EconProject/HonorsProject/nsch_data.csv')
+
+# Factor Prep
+df <- df %>%
+  mutate(
+    URBAN_RURAL = factor(URBAN_RURAL, 
+                         levels = c(0, 1),
+                         labels = c("Urban", "Rural")), 
+    INSURANCE_TYPE = factor(INSURANCE_TYPE, 
+                            levels = c(0, 1),
+                            labels = c("Public", "Private")),
+    #RACETH = factor(RACETH, 
+                    #levels = c(0, 1, 2, 3),
+                    #labels = c("Hispanic", "Black", "White", "Asian")),
+    GENDER = factor(GENDER,  
+                    levels = c(1, 2),
+                    labels = c("Male", "Female")),
+    BORNUSA = factor(BORNUSA, 
+                     levels = c(0, 1),
+                     labels = c("Not USA", "USA")),
+    BMI = factor(BMI,  
+                 levels = c(0, 1),
+                 labels = c("Normal", "Obese")),
+    Year = as.factor(Year)
+  )
+
+# Normalizing
+df <- df %>%
+  mutate(
+    INCOME = datawizard::standardize(INCOME),
+    EDUC_P = datawizard::standardize(EDUC_P),
+    QUALITY_HEALTH = datawizard::standardize(QUALITY_HEALTH),
+    AGE = datawizard::standardize(AGE),
+    HEALTH_AVAIL = datawizard::standardize(HEALTH_AVAIL),
+    WELLBEING_SCORE = datawizard::standardize(WELLBEING_SCORE)
+
+)
+```
+
+# Model Run
+
+```{r, include = FALSE}
+library(lme4)
+library(lmerTest)
+library(performance)
+
+# Logistic model with specified interaction terms only (Reference: Middle School, Hispanic)
+bmi_pooled_logit <- glm(BMI ~ 
+  # Main Effects
+  GENDER + BORNUSA + WELLBEING_SCORE + INCOME + URBAN_RURAL + INSURANCE_TYPE + HEALTH_AVAIL + 
+  EDUC_P + QUALITY_HEALTH + Year +  AGE + 
+  
+  #Education (Middle school reference)
+  EDUC_ELEM + EDUC_HIGH + 
+    
+  #Race (White reference)
+  RE_HISPANIC 
+  #+ RE_BLACK 
+  + RE_OTHER
+  + RE_WHITE
+  
+  # Interaction
+  ,  
+  
+  # Model family and data
+  family = binomial(link = "logit"), 
+  data = df
+)
+```
+
+# Model Summary
+```{r}
+summary(bmi_pooled_logit)  # Check significance of fixed effects
+```
+
+## Marginal Effects
+
+```{r, include = FALSE}
+library(margins)
+margef <- margins(bmi_pooled_logit)
+```
+
+```{r}
+summary(margef)
+```
+
+# Diagnostics
+
+## Cronbach's Alpha
+```{r, include = FALSE}
+library(psych)
+# Select only the variables used to create QUALITY_HEALTH
+quality_health_items <- df %>%
+  select(K5Q41, K5Q40, K5Q30, RAISECONC, K5Q32)
+
+# Ensure variables are numeric and replace NAs with 0
+quality_health_items <- quality_health_items %>%
+  mutate(across(everything(), ~ifelse(is.na(.), 0, as.numeric(.))))
+
+# Compute Cronbach’s Alpha
+cronbach_result <- alpha(quality_health_items, check.keys=TRUE)
+cronbach_result$total$raw_alpha
+```
+
+```{r include=FALSE}
+cronbach_result$total$raw_alpha
+```
+
+## VIF
+
+```{r, include=FALSE}
+library(car)
+vif_table <- as.data.frame(vif(bmi_pooled_logit))
+```
+
+```{r include=FALSE}
+vif_table
+```
+
+## Model Statistics
+
+```{r, include=FALSE}
+library(lmtest)  # For Wald test
+library(sandwich)
+
+# Number of observations
+num_obs_logit <- nobs(bmi_pooled_logit)
+
+# Wald Chi-square test
+wald_stat <- sum((coef(bmi_pooled_logit) / sqrt(diag(vcov(bmi_pooled_logit))))^2)
+
+# Extract probability of Chi-square
+p_chi_sq <- 1 - pchisq(wald_stat, df = df.residual(bmi_pooled_logit))
+
+# Compute Root MSE (Approximate using residual deviance)
+root_mse_logit <- sqrt(deviance(bmi_pooled_logit) / df.residual(bmi_pooled_logit))
+```
+
+```{r}
+# Display results
+list(
+  "Number of Observations" = num_obs_logit,
+  "Wald Chi-square" = wald_stat,
+  "Probability of Chi-square" = p_chi_sq,
+  "Root MSE" = root_mse_logit
+)
+```
+
+## Model Statistics 3/20
+```{r, include = FALSE}
+# Likelihood Ratio (LR) Chi-square test
+lr_stat <- with(bmi_pooled_logit, null.deviance - deviance)  # LR Chi-square statistic
+df_diff <- with(bmi_pooled_logit, df.null - df.residual)  # Degrees of freedom difference
+p_value_lr <- pchisq(lr_stat, df_diff, lower.tail = FALSE)  # p-value
+
+# Log-Likelihood of the fitted model
+log_likelihood <- logLik(bmi_pooled_logit)
+
+# Compute Pseudo-R² (McFadden's R²)
+pseudo_r2 <- 1 - (bmi_pooled_logit$deviance / bmi_pooled_logit$null.deviance)
+```
+```{r}
+# Display the results
+list(
+  "LR Chi-square" = lr_stat,
+  "p-value (LR test)" = p_value_lr,
+  "Log-Likelihood" = log_likelihood,
+  "Pseudo-R2 (McFadden's R²)" = pseudo_r2
+)
+```
+
+## Marginal Effect Statistics
+
+```{r, include=FALSE}
+# Convert fitted values into a dataframe
+marg_fitted <- fitted(bmi_pooled_logit)
+
+# Create a linear model using fitted values
+marg_lm <- lm(marg_fitted ~ model.matrix(bmi_pooled_logit)[, -1])  # Exclude intercept
+
+# Summary of the linear model
+marg_summary <- summary(marg_lm)
+
+# Compute F-statistic and p-value
+marg_f_stat <- marg_summary$fstatistic[1]
+marg_p_f_stat <- pf(marg_f_stat, df1 = marg_summary$fstatistic[2], 
+                     df2 = marg_summary$fstatistic[3], lower.tail = FALSE)
+
+# Extract R-squared and Adjusted R-squared
+marg_r_squared <- marg_summary$r.squared
+marg_adj_r_squared <- marg_summary$adj.r.squared
+
+# Compute Root MSE
+marg_root_mse <- sqrt(mean(residuals(marg_lm)^2))
+
+# Number of observations
+num_obs_marg <- nobs(bmi_pooled_logit)
+```
+
+```{r}
+# Display results
+list(
+  "Number of Observations" = num_obs_marg,
+  "F-statistic" = marg_f_stat,
+  "Probability of F-statistic" = marg_p_f_stat,
+  "R-squared" = marg_r_squared,
+  "Adjusted R-squared" = marg_adj_r_squared,
+  "Root MSE" = marg_root_mse
+)
+```

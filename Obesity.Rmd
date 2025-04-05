@@ -1,0 +1,346 @@
+---
+title: "Obesity of the Youth"
+author: "Jonathan Ma"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r Packages, include = FALSE}
+library(haven)    # For reading SAS files (.sas7bdat)
+library(tidyverse) # For data wrangling
+library(dplyr)
+library(readr)
+```
+```{r Import, include=FALSE}
+# 2023
+topical_file_2023 <- '/Users/jonathanma/Desktop/Academics/2024-25/EconProject/HonorsProject/nsch_2023e_topical_SAS/nsch_2023e_topical.sas7bdat'
+
+# 2019
+topical_file_2019 <- '/Users/jonathanma/Desktop/Academics/2024-25/EconProject/HonorsProject/nsch_2019_topical_SAS (1)/nsch_2019e_topical.sas7bdat'
+
+# Read the NSCH Topical dataset
+topical_2019 <- read_sas(topical_file_2019)
+topical_2023 <- read_sas(topical_file_2023)
+
+# Add year identifiers
+topical_2019 <- topical_2019  %>% mutate(Year = 2019)
+topical_2023 <- topical_2023  %>% mutate(Year = 2023)
+
+# Merge datasets
+df <- bind_rows(topical_2019, topical_2023)
+df[is.na(df)] <- 0
+```
+
+```{R INCOME, include=FALSE}
+# Filter out T1 (age 0-5)
+df <- df %>%
+  filter(FORMTYPE != "T1")
+
+# Define poverty guidelines for 2019 and 2023
+poverty_guidelines_2019 <- c("1" = 12490, "2" = 16910, "3" = 21330, "4" = 25750, 
+                             "5" = 30170, "6" = 34590, "7" = 39010, "8" = 43430)
+poverty_guidelines_2023 <- c("1" = 14580, "2" = 19720, "3" = 24860, "4" = 30000, 
+                             "5" = 35140, "6" = 40280, "7" = 45420, "8" = 50560)
+
+# Function to get the correct poverty guideline based on household size and year
+get_poverty_guideline <- function(family_size, year) {
+  if (family_size <= 8) {
+    return(ifelse(year == 2019, 
+                  poverty_guidelines_2019[as.character(family_size)], 
+                  poverty_guidelines_2023[as.character(family_size)]))
+  } else {
+    # For families larger than 8, use the correct year's base amount and add extra per person
+    base_2019 <- 43430
+    base_2023 <- 50560
+    extra_per_person_2019 <- 4420
+    extra_per_person_2023 <- 5180
+
+    return(ifelse(year == 2019,
+                  base_2019 + (family_size - 8) * extra_per_person_2019,
+                  base_2023 + (family_size - 8) * extra_per_person_2023))
+  }
+}
+
+# Compute income based on the average of the 6 imputed FPL values
+df <- df %>%
+  mutate(
+    across(starts_with("FPL_I"), as.numeric, .names = "num_{.col}"),
+    FPL_combined = rowMeans(select(., starts_with("FPL_I")), na.rm = TRUE),
+    C_FAMNUM = as.numeric(HHCOUNT),
+
+    # Apply the correct poverty guideline based on year
+    poverty_guideline = mapply(get_poverty_guideline, C_FAMNUM, Year),
+
+    # Compute adjusted income
+    INCOME = (FPL_combined / 100) * poverty_guideline
+  ) %>%
+  
+  # Drop individual imputed FPL variables to clean dataset
+  select(-starts_with("FPL_I"))
+```
+```{R URBAN_RURAL, include=FALSE}
+# URBAN_RURAL: Recode urban rural
+df <- df %>%
+  mutate(
+    URBAN_RURAL = case_when(
+      METRO_YN == 1 ~ 0,   # Metropolitan area (Urban)
+      METRO_YN == 2 ~ 1,   # Non-Metropolitan area (Rural)
+      TRUE ~ 0        # Handle missing values
+    )
+  )
+```
+```{R INSURANCE_TYPE, include=FALSE}
+df <- df %>%
+  mutate(
+    # Convert INSTYPE to numeric
+    INSTYPE = as.numeric(INSTYPE),
+
+    # Create binary variable for insurance type
+    INSURANCE_TYPE = case_when(
+      INSTYPE == 1 ~ 0,  # Medicaid (Public)
+      INSTYPE == 2 ~ 1,  # Private Health Insurance (Private)
+      TRUE ~ 0    # Missing or unknown insurance type
+    )
+  )
+```
+```{R HEALTH_AVAIL, include=FALSE}
+df <- df %>%
+  mutate(
+    # Replace NA or 0 values with the "No" default values
+    ISSUECOST = ifelse(is.na(ISSUECOST) | ISSUECOST == 0, 1, ISSUECOST),  # Default "No" = 1
+    CURRINS = ifelse(is.na(CURRINS) | CURRINS == 0, 2, CURRINS),        # Default "No" = 2
+    APPOINTMENT = ifelse(is.na(APPOINTMENT) | APPOINTMENT == 0, 2, APPOINTMENT),  # Default "No" = 2
+
+    # Sum the raw values to get HEALTH_AVAIL
+    HEALTH_AVAIL = ISSUECOST + CURRINS + APPOINTMENT
+  )
+```
+```{R EDUC_P, include=FALSE}
+# EDUC_P: Parent's education
+df <- df %>%
+  mutate(
+    A1_GRADE = as.numeric(A1_GRADE),  # Ensure numeric values
+    A2_GRADE = as.numeric(A2_GRADE),
+    HIGRADE_TVIS = as.numeric(HIGRADE_TVIS),
+
+    # Use the highest education level of either parent
+    EDUC_P = case_when(
+      !is.na(A1_GRADE) & !is.na(A2_GRADE) ~ pmax(A1_GRADE, A2_GRADE, na.rm = TRUE),  # Max of both parents
+      !is.na(A1_GRADE) ~ A1_GRADE,  # Use A1_GRADE if available
+      !is.na(A2_GRADE) ~ A2_GRADE,  # Use A2_GRADE if A1 is missing
+      !is.na(HIGRADE_TVIS) ~ HIGRADE_TVIS,  # Fallback to highest household education
+      TRUE ~ 0  # Missing values
+    )
+  )
+```
+```{R QUALITY_HEALTH, include=FALSE}
+df <- df %>%
+  mutate(
+    # Convert variables to numeric and handle NAs, 0s, or 1s as 1
+    K5Q41 = ifelse(is.na(as.numeric(K5Q41)) | as.numeric(K5Q41) <= 1, 1, as.numeric(K5Q41)),  
+    K5Q40 = ifelse(is.na(as.numeric(K5Q40)) | as.numeric(K5Q40) <= 1, 1, as.numeric(K5Q40)), 
+    K5Q30 = ifelse(is.na(as.numeric(K5Q30)) | as.numeric(K5Q30) <= 1, 1, as.numeric(K5Q30)),  
+    RAISECONC = ifelse(is.na(as.numeric(RAISECONC)) | as.numeric(RAISECONC) <= 1, 1, as.numeric(RAISECONC)),  
+    K5Q32 = ifelse(is.na(as.numeric(K5Q32)) | as.numeric(K5Q32) <= 1, 1, as.numeric(K5Q32)),  
+    
+    # Keep POSCHOICE and GAINSKILLS unchanged, treating NAs/0s as 1
+    #POSCHOICE = ifelse(is.na(as.numeric(POSCHOICE))|as.numeric(POSCHOICE)==0|as.numeric(POSCHOICE) == 3, 1, as.numeric(POSCHOICE)),  
+    #GAINSKILLS=ifelse(is.na(as.numeric(GAINSKILLS))|as.numeric(GAINSKILLS)==0|as.numeric(GAINSKILLS) == 3, 1, as.numeric(GAINSKILLS)),  
+
+    # Reverse-code: 1 (worst) to 4 (best) → 0 (worst) to 3 (best)
+    K5Q41 = 5 - K5Q41,
+    K5Q40 = 5 - K5Q40,
+    K5Q30 = 5 - K5Q30,
+    RAISECONC = 5 - RAISECONC,
+    K5Q32 = 5 - K5Q32,
+
+    # Create a composite healthcare quality score with proper scaling
+    QUALITY_HEALTH = K5Q41 + K5Q40 + K5Q30 + RAISECONC + K5Q32  - 4
+  )
+```
+```{R RACETH, include=FALSE}
+df <- df %>%
+  mutate(
+    C_RACE_R = as.numeric(SC_RACE_R),
+    C_HISPANIC_R = as.numeric(SC_HISPANIC_R),
+    
+    # Create dummy variables for each race/ethnicity category
+    RE_HISPANIC = ifelse(C_HISPANIC_R == 1, 1, 0),
+    RE_BLACK = ifelse(C_RACE_R == 2, 1, 0),
+    RE_WHITE = ifelse(C_RACE_R == 1, 1, 0),
+    RE_OTHER = ifelse(C_RACE_R %in% c(3, 4, 5, 7) | is.na(C_RACE_R), 1, 0)  # Includes missing values as Other
+  )
+```
+```{R GENDER, include=FALSE}
+# GENDER: Child's Gender
+df <- df %>%
+  mutate(
+    SC_SEX = as.numeric(SC_SEX),
+    
+    # Assign gender labels
+    GENDER = case_when(
+      SC_SEX == 1 ~ 1, #Male
+      SC_SEX == 2 ~ 2, #Female
+      TRUE ~ 1  # Handle missing values
+    )
+  )
+```
+```{R BORNUSA, include=FALSE}
+# BORNUSA: born in USA or not
+df <- df %>%
+  mutate(
+    BORNUSA = case_when(
+      BORNUSA == 1 ~ 0, #US Born
+      BORNUSA == 2 ~ 1, #Not US Born
+      TRUE ~ 0  # Handle missing values
+    )
+  )
+```
+```{R EDUCLVL, include=FALSE}
+df <- df %>%
+  mutate(
+    # Create three dummy variables for educational levels
+    EDUC_ELEM = ifelse(SC_AGE_YEARS >= 7 & SC_AGE_YEARS <= 10, 1, 0),  # 7-10 years
+    EDUC_MID  = ifelse(SC_AGE_YEARS >= 11 & SC_AGE_YEARS <= 14, 1, 0), # 11-14 years (Reference Group)
+    EDUC_HIGH = ifelse(SC_AGE_YEARS >= 15 & SC_AGE_YEARS <= 17, 1, 0)  # 15-17 years
+  )
+```
+```{R AGE, include=FALSE}
+df <- df %>%
+  # Filter out T1 (ages 0-5) and age 6
+  filter(FORMTYPE != "T1", SC_AGE_YEARS > 6) %>%
+  
+  # Convert SC_AGE_YEARS to numeric
+  mutate(
+    AGE = as.numeric(SC_AGE_YEARS),
+    AGE_MALE = ifelse(GENDER == 1, AGE, NA),
+    AGE_FEMALE = ifelse(GENDER == 2, AGE, NA),
+  )
+```
+```{R WELLBEING_SCORE, include=FALSE}
+# WELLBEING: Child's health status
+df <- df %>%
+  mutate(
+    K2Q01 = as.numeric(K2Q01),  # Convert to numeric
+    
+    # Reverse scale so higher values represent better well-being
+    WELLBEING_SCORE = 6 - K2Q01,
+
+    # Create a categorical well-being variable
+    WELLBEING = case_when(
+      K2Q01 == 1 ~ 1, #Excellent
+      K2Q01 == 2 ~ 2, #Very Good
+      K2Q01 == 3 ~ 3, #Good
+      K2Q01 == 4 ~ 4, #Fair
+      K2Q01 == 5 ~ 5, #Poor
+      TRUE ~ 1  # Handle missing values
+    )
+  )
+```
+```{R BMI, include=FALSE}
+# BMI: BMI Class
+df <- df %>%
+  mutate(
+    BMICLASS = as.numeric(BMICLASS),  # Ensure it's numeric
+    BMICLASS_1 = ifelse(BMICLASS == 0, 1, BMICLASS),
+    
+    # Create BMI classification with 3 levels
+    BMI = case_when(
+      BMICLASS %in% c(1, 2) ~ 0, #Normal
+      BMICLASS %in% c(3, 4) ~ 1,  # Obese
+      TRUE ~ 0  # Handle missing values
+    )
+  )
+```
+
+```{R Gender and QH Interaction, include=FALSE}
+#Gender*Quality Health
+df <- df %>%
+  mutate(GENDER_QUALITY_HEALTH = GENDER * QUALITY_HEALTH)
+```
+```{r Gender Differences for QH and BMI, include=FALSE}
+#Gender Quality Health (For Concentration Index)
+df <- df %>%
+  mutate(
+    QH_MALE = ifelse(GENDER == 1, QUALITY_HEALTH, NA),
+    QH_FEMALE = ifelse(GENDER == 2, QUALITY_HEALTH, NA),
+    BMI_MALE = ifelse(GENDER == 1, BMICLASS_1, NA),
+    BMI_FEMALE = ifelse(GENDER == 2, BMICLASS_1, NA),
+    GENDER_MALE = ifelse(GENDER == 1, 1, NA),
+    GENDER_FEMALE = ifelse(GENDER == 2, 1, NA)
+  ) 
+```
+
+```{r Variable Selection, include=FALSE}
+# Select only the required variables (alphabetized)
+df <- df %>%
+  select(
+    AGE, AGE_FEMALE, AGE_MALE,
+    APPOINTMENT,
+    BMI, BMI_FEMALE, BMI_MALE, BMICLASS_1,
+    BORNUSA,
+    CURRINS,
+    EDUC_ELEM, EDUC_HIGH, EDUC_MID, EDUC_P,
+    GENDER, GENDER_FEMALE, GENDER_MALE, GENDER_QUALITY_HEALTH,
+    HEALTH_AVAIL,
+    INCOME,
+    INSURANCE_TYPE,
+    ISSUECOST,
+    K5Q30, K5Q32, K5Q40, K5Q41,
+    QH_FEMALE, QH_MALE,
+    QUALITY_HEALTH,
+    RAISECONC,
+    RE_BLACK, RE_HISPANIC, RE_OTHER, RE_WHITE,
+    URBAN_RURAL,
+    WELLBEING_SCORE,
+    Year
+  )
+```
+```{r Combining, include=FALSE}
+set.seed(420)  # For reproducibility
+
+# Downsample 2023 data to match 2019's sample size
+df_2023_downsampled <- df %>%
+  filter(Year == 2023) %>%
+  sample_n(nrow(df %>% filter(Year == 2019)))
+
+# Keep all 2019 data
+df_2019 <- df %>%
+  filter(Year == 2019)
+
+# Merge balanced dataset
+data <- bind_rows(df_2019, df_2023_downsampled)
+
+# Save the new dataset
+library(readr)
+#write_csv(data, "nsch_data.csv")
+```
+```{r Summary Statistics, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+
+# Apply summary() to each numeric variable and store in a tidy format
+summary_table <- map_dfr(names(data), function(var) {
+  summary_stats <- summary(data[[var]])
+  tibble(
+    Variable = var,
+    Min = summary_stats[1],
+    Mean = round(summary_stats[4], 4),
+    Max = summary_stats[6],
+    Obs = sum(!is.na(data[[var]]))
+  )
+})
+
+# Display the summary
+#View(summary_table)
+```
+
+# Summary Statistics
+```{r}
+knitr::kable(summary_table, caption = "Summary Statistics Table")
+```
