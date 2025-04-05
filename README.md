@@ -37,6 +37,7 @@ This project investigates the structural and behavioral determinants of adolesce
 │   ├── LogitModel.Rmd
 │   └── ConcIndex.Rmd
 ├── output/                # Figures, tables, and regression output
-├── poster/                # CURCA poster files (.pptx, .pdf)
-├── paper/                 # Final paper draft (.docx or .pdf)
+├── presentation/          # Written output
+│   ├── Abstract        
+│   ├── Paper
 └── README.md              # Project overview and instructions
