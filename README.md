@@ -10,7 +10,7 @@ This project investigates the structural and behavioral determinants of adolesce
 
 ---
 
-## 🎯 Objectives
+## Objectives
 
 - Analyze the impact of **socioeconomic, racial, and healthcare factors** on adolescent obesity.
 - Compare **pre- and post-COVID** trends in obesity using year-fixed effects.
@@ -19,16 +19,16 @@ This project investigates the structural and behavioral determinants of adolesce
 
 ---
 
-## 🧪 Methodology
+## Methodology
 
-- 📊 **Data Source**: National Survey of Children’s Health (NSCH) 2019 & 2023
-- 🔁 **Model**: Pooled logistic regression with marginal effects
-- 📈 **Inequality Metrics**: Concentration Index (CI), Kakwani Index
-- 🧠 **Framework**: PRECEDE-PROCEED model used for behavioral context
+- **Data Source**: National Survey of Children’s Health (NSCH) 2019 & 2023
+- **Model**: Pooled logistic regression with marginal effects
+- **Inequality Metrics**: Concentration Index (CI), Kakwani Index
+- **Framework**: PRECEDE-PROCEED model used for behavioral context
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```bash
 ├── data/                  # Raw, Cleaned, and Transformed NSCH data
