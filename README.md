@@ -39,5 +39,5 @@ This project investigates the structural and behavioral determinants of adolesce
 ├── output/                # Figures, tables, and regression output
 ├── presentation/          # Written output
 │   ├── Abstract        
-│   ├── Paper
+│   ├── Poster
 └── README.md              # Project overview and instructions
